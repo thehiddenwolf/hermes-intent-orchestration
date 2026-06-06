@@ -1,0 +1,15 @@
+name: intent_orchestration
+version: "1.0.0"
+description: "Intent Orchestration plugin linking Thinker and Doer/Research agents, with short-term/long-term memory integration."
+author: Antigravity
+kind: backend
+provides_tools:
+  - short_term_memorize
+  - short_term_forget
+  - long_term_memorize
+  - long_term_forget
+  - long_term_recall
+  - research
+  - do
+hooks:
+  - post_api_request
