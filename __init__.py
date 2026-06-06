@@ -890,9 +890,32 @@ def monkeypatch_persist_session():
     except Exception as e:
         logger.warning(f"[Intent Orchestration] Failed to monkeypatch AIAgent._persist_session: {e}")
 
+def monkeypatch_build_assistant_message():
+    try:
+        from run_agent import AIAgent
+        original_build = getattr(AIAgent, "_build_assistant_message", None)
+        if original_build and not hasattr(AIAgent, "_build_assistant_message_patched"):
+            def patched_build(self, assistant_message, finish_reason):
+                msg_dict = original_build(self, assistant_message, finish_reason)
+                orig = None
+                if isinstance(assistant_message, dict):
+                    orig = assistant_message.get("_original_content")
+                else:
+                    orig = getattr(assistant_message, "_original_content", None)
+                if orig is not None:
+                    msg_dict["_original_content"] = orig
+                return msg_dict
+            
+            AIAgent._build_assistant_message = patched_build
+            AIAgent._build_assistant_message_patched = True
+            logger.info("[Intent Orchestration] Successfully monkeypatched AIAgent._build_assistant_message")
+    except Exception as e:
+        logger.warning(f"[Intent Orchestration] Failed to monkeypatch AIAgent._build_assistant_message: {e}")
+
 def register(ctx) -> None:
-    # Perform monkeypatching on AIAgent._persist_session
+    # Perform monkeypatching on AIAgent._persist_session and _build_assistant_message
     monkeypatch_persist_session()
+    monkeypatch_build_assistant_message()
 
     # Register all tools under the 'intent_orchestration' toolset
     ctx.register_tool(
