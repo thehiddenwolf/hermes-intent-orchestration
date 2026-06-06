@@ -374,6 +374,53 @@ def handle_post_tool_call(tool_name: str, args: dict, result: str, session_id: s
             with _session_wiki_lock:
                 _session_wiki_edits[prefix].append((title, action))
 
+TAG_PATTERNS = {
+    "shortTermMemorize": re.compile(r"<(?:short[-_\s]?term[-_\s]?memorize|shorttermmemorize)>(.*?)</(?:short[-_\s]?term[-_\s]?memorize|shorttermmemorize)>", re.DOTALL | re.IGNORECASE),
+    "shortTermForget": re.compile(r"<(?:short[-_\s]?term[-_\s]?forget|shorttermforget)>(.*?)</(?:short[-_\s]?term[-_\s]?forget|shorttermforget)>", re.DOTALL | re.IGNORECASE),
+    "longTermMemorize": re.compile(r"<(?:long[-_\s]?term[-_\s]?memorize|longtermmemorize)>(.*?)</(?:long[-_\s]?term[-_\s]?memorize|longtermmemorize)>", re.DOTALL | re.IGNORECASE),
+    "longTermForget": re.compile(r"<(?:long[-_\s]?term[-_\s]?forget|longtermforget)>(.*?)</(?:long[-_\s]?term[-_\s]?forget|longtermforget)>", re.DOTALL | re.IGNORECASE),
+    "longTermRecall": re.compile(r"<(?:long[-_\s]?term[-_\s]?recall|longtermrecall)>(.*?)</(?:long[-_\s]?term[-_\s]?recall|longtermrecall)>", re.DOTALL | re.IGNORECASE),
+    "research": re.compile(r"<(research)>(.*?)</research>", re.DOTALL | re.IGNORECASE),
+    "do": re.compile(r"<(do)>(.*?)</do>", re.DOTALL | re.IGNORECASE),
+    "searchNotes": re.compile(r"<(?:search[-_\s]?notes|searchnotes)>(.*?)</(?:search[-_\s]?notes|searchnotes)>", re.DOTALL | re.IGNORECASE),
+    "readNote": re.compile(r"<(?:read[-_\s]?note|readnote)>(.*?)</(?:read[-_\s]?note|readnote)>", re.DOTALL | re.IGNORECASE),
+}
+
+UNCLOSED_TAG_PATTERNS = {
+    "shortTermMemorize": re.compile(r"<(short[-_\s]?term[-_\s]?memorize|shorttermmemorize)>(?!.*</(?:short[-_\s]?term[-_\s]?memorize|shorttermmemorize)>)(.*)$", re.DOTALL | re.IGNORECASE),
+    "shortTermForget": re.compile(r"<(short[-_\s]?term[-_\s]?forget|shorttermforget)>(?!.*</(?:short[-_\s]?term[-_\s]?forget|shorttermforget)>)(.*)$", re.DOTALL | re.IGNORECASE),
+    "longTermMemorize": re.compile(r"<(long[-_\s]?term[-_\s]?memorize|longtermmemorize)>(?!.*</(?:long[-_\s]?term[-_\s]?memorize|longtermmemorize)>)(.*)$", re.DOTALL | re.IGNORECASE),
+    "longTermForget": re.compile(r"<(long[-_\s]?term[-_\s]?forget|longtermforget)>(?!.*</(?:long[-_\s]?term[-_\s]?forget|longtermforget)>)(.*)$", re.DOTALL | re.IGNORECASE),
+    "longTermRecall": re.compile(r"<(long[-_\s]?term[-_\s]?recall|longtermrecall)>(?!.*</(?:long[-_\s]?term[-_\s]?recall|longtermrecall)>)(.*)$", re.DOTALL | re.IGNORECASE),
+    "research": re.compile(r"<(research)>(?!.*</research>)(.*)$", re.DOTALL | re.IGNORECASE),
+    "do": re.compile(r"<(do)>(?!.*</do>)(.*)$", re.DOTALL | re.IGNORECASE),
+    "searchNotes": re.compile(r"<(search[-_\s]?notes|searchnotes)>(?!.*</(?:search[-_\s]?notes|searchnotes)>)(.*)$", re.DOTALL | re.IGNORECASE),
+    "readNote": re.compile(r"<(read[-_\s]?note|readnote)>(?!.*</(?:read[-_\s]?note|readnote)>)(.*)$", re.DOTALL | re.IGNORECASE),
+}
+
+def _auto_close_and_normalize_tags(content: str) -> str:
+    if not content:
+        return content
+        
+    # First: Auto-close any unclosed tags
+    for tag_name, pattern in UNCLOSED_TAG_PATTERNS.items():
+        match = pattern.search(content)
+        if match:
+            tag_text = match.group(1)
+            inside_content = match.group(2)
+            canonical_tag = tag_name
+            content = content[:match.start()] + f"<{canonical_tag}>{inside_content}</{canonical_tag}>"
+            break
+            
+    # Second: Normalize casing/naming of all closed tags
+    for tag_name, pattern in TAG_PATTERNS.items():
+        def replace_fn(match):
+            inside_content = match.group(match.lastindex)
+            return f"<{tag_name}>{inside_content}</{tag_name}>"
+        content = pattern.sub(replace_fn, content)
+            
+    return content
+
 def handle_post_api_request(assistant_message, session_id, **kwargs):
     # Save the session ID in thread-local storage for reference
     _thread_local.session_id = session_id
@@ -388,6 +435,7 @@ def handle_post_api_request(assistant_message, session_id, **kwargs):
         return
         
     content = assistant_message.content or ""
+    normalized_content = _auto_close_and_normalize_tags(content)
     
     mappings = {
         "shortTermMemorize": "content",
@@ -403,10 +451,10 @@ def handle_post_api_request(assistant_message, session_id, **kwargs):
     
     injected_tcs = []
     
-    # Scan content for each XML tag
+    # Scan normalized content for each XML tag
     for tag, arg_name in mappings.items():
         pattern = f"<{tag}>(.*?)</{tag}>"
-        matches = list(re.finditer(pattern, content, re.DOTALL | re.IGNORECASE))
+        matches = list(re.finditer(pattern, normalized_content, re.DOTALL | re.IGNORECASE))
         for match in matches:
             val = match.group(1).strip()
             
@@ -427,21 +475,22 @@ def handle_post_api_request(assistant_message, session_id, **kwargs):
             assistant_message.tool_calls = []
         assistant_message.tool_calls.extend(injected_tcs)
 
-    # Replace XML tags in assistant_message.content with emotes, keeping original in _original_content
-    replaced_content = _replace_xml_tags(content)
-    if replaced_content != content:
+    # Replace XML tags in assistant_message.content with emotes, keeping normalized in _original_content
+    replaced_content = _replace_xml_tags(normalized_content)
+    if replaced_content != content or normalized_content != content:
         if isinstance(assistant_message, dict):
-            assistant_message["_original_content"] = content
+            assistant_message["_original_content"] = normalized_content
             assistant_message["content"] = replaced_content
         else:
             try:
-                assistant_message._original_content = content
+                assistant_message._original_content = normalized_content
             except AttributeError:
                 pass
             try:
                 assistant_message.content = replaced_content
             except AttributeError:
                 pass
+
 
 # ---------------------------------------------------------------------------
 # Registration Entrypoint
@@ -782,35 +831,34 @@ def _replace_xml_tags(content: str) -> str:
     
     for tag, template in mappings_templates.items():
         pattern = rf"<{tag}>(.*?)</{tag}>"
-        while True:
-            match = re.search(pattern, content, re.DOTALL | re.IGNORECASE)
-            if not match:
-                break
+        
+        def replace_fn(match):
             val = match.group(1).strip()
             if not val:
                 if tag == "research":
-                    emote = f"*{name} goes to research*"
+                    return f"*{name} goes to research*"
                 elif tag == "do":
-                    emote = f"*{name} goes to execute a task*"
+                    return f"*{name} goes to execute a task*"
                 elif tag == "shortTermMemorize":
-                    emote = f"*{name} commits details to memory*"
+                    return f"*{name} commits details to memory*"
                 elif tag == "shortTermForget":
-                    emote = f"*{name} forgets details*"
+                    return f"*{name} forgets details*"
                 elif tag == "longTermMemorize":
-                    emote = f"*{name} commits to long-term memory*"
+                    return f"*{name} commits to long-term memory*"
                 elif tag == "longTermForget":
-                    emote = f"*{name} deletes a long-term memory*"
+                    return f"*{name} deletes a long-term memory*"
                 elif tag == "longTermRecall":
-                    emote = f"*{name} recalls from long-term memory*"
+                    return f"*{name} recalls from long-term memory*"
                 elif tag == "searchNotes":
-                    emote = f"*{name} searches her wiki notes*"
+                    return f"*{name} searches her wiki notes*"
                 elif tag == "readNote":
-                    emote = f"*{name} reads a wiki page*"
+                    return f"*{name} reads a wiki page*"
                 else:
-                    emote = f"*{tag}*"
+                    return f"*{tag}*"
             else:
-                emote = template.format(val=val)
-            content = content[:match.start()] + emote + content[match.end():]
+                return template.format(val=val)
+                
+        content = re.sub(pattern, replace_fn, content, flags=re.DOTALL | re.IGNORECASE)
             
     return content
 
@@ -819,7 +867,8 @@ def handle_transform_llm_output(response_text: str, **kwargs) -> Optional[str]:
     if not response_text:
         return None
         
-    content = _replace_xml_tags(response_text)
+    normalized = _auto_close_and_normalize_tags(response_text)
+    content = _replace_xml_tags(normalized)
     if content == response_text:
         return None
     return content
