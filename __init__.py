@@ -8,6 +8,7 @@ import threading
 import logging
 from types import SimpleNamespace
 from pathlib import Path
+from typing import Optional
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -426,6 +427,22 @@ def handle_post_api_request(assistant_message, session_id, **kwargs):
             assistant_message.tool_calls = []
         assistant_message.tool_calls.extend(injected_tcs)
 
+    # Replace XML tags in assistant_message.content with emotes, keeping original in _original_content
+    replaced_content = _replace_xml_tags(content)
+    if replaced_content != content:
+        if isinstance(assistant_message, dict):
+            assistant_message["_original_content"] = content
+            assistant_message["content"] = replaced_content
+        else:
+            try:
+                assistant_message._original_content = content
+            except AttributeError:
+                pass
+            try:
+                assistant_message.content = replaced_content
+            except AttributeError:
+                pass
+
 # ---------------------------------------------------------------------------
 # Registration Entrypoint
 # ---------------------------------------------------------------------------
@@ -542,6 +559,18 @@ READ_NOTE_SCHEMA = {
 def clean_orchestration_history(messages):
     if not messages:
         return
+        
+    # Restore original content for assistant messages that had XML tags replaced
+    for msg in messages:
+        if isinstance(msg, dict):
+            if "_original_content" in msg:
+                msg["content"] = msg["_original_content"]
+        else:
+            if hasattr(msg, "_original_content"):
+                try:
+                    msg.content = msg._original_content
+                except AttributeError:
+                    pass
         
     orchestration_tools = {
         "shortTermMemorize", "shortTermForget", "longTermMemorize", "longTermForget", 
@@ -734,13 +763,10 @@ def handle_pre_llm_call(**kwargs):
     if messages_list is not None:
         clean_orchestration_history(messages_list)
 
-def handle_transform_llm_output(response_text: str, **kwargs) -> str:
-    flush_active_transformer()
-    if not response_text:
-        return response_text
+def _replace_xml_tags(content: str) -> str:
+    if not content:
+        return content
         
-    content = response_text
-    
     name = get_personality_name()
     mappings_templates = {
         "shortTermMemorize": f"*{name} commits details to her memory: {{val}}*",
@@ -788,6 +814,16 @@ def handle_transform_llm_output(response_text: str, **kwargs) -> str:
             
     return content
 
+def handle_transform_llm_output(response_text: str, **kwargs) -> Optional[str]:
+    flush_active_transformer()
+    if not response_text:
+        return None
+        
+    content = _replace_xml_tags(response_text)
+    if content == response_text:
+        return None
+    return content
+
 def monkeypatch_persist_session():
     try:
         from run_agent import AIAgent
@@ -795,6 +831,8 @@ def monkeypatch_persist_session():
         if original_persist and not hasattr(AIAgent, "_persist_session_patched"):
             def patched_persist(self, messages, conversation_history=None):
                 clean_orchestration_history(messages)
+                if conversation_history is not None:
+                    clean_orchestration_history(conversation_history)
                 return original_persist(self, messages, conversation_history)
             
             AIAgent._persist_session = patched_persist

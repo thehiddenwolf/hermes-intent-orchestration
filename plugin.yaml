@@ -13,3 +13,8 @@ provides_tools:
   - do
 hooks:
   - post_api_request
+  - post_tool_call
+  - pre_api_request
+  - post_llm_call
+  - pre_llm_call
+  - transform_llm_output
